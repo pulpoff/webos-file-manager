@@ -29,7 +29,7 @@ After an update, the app notices that the running file service is older than the
 Thumbnails, media information and embedded subtitles need ffmpeg. Browsing and playback work without it.
 
 - The app offers the download once; you can also start it later from **Settings → Download ffmpeg**.
-- `get-ffmpeg.sh` downloads John Van Sickle's [static arm64 build](https://johnvansickle.com/ffmpeg/) (GPLv3; 19 MB to download, about 100 MB on the TV) and checks it against the published md5.
+- `get-ffmpeg.sh` downloads John Van Sickle's [static arm64 build](https://johnvansickle.com/ffmpeg/) (GPLv3; 19 MB to download, about 100 MB on the TV) and checks it against the published md5. The app starts it in the background (`get-ffmpeg.sh start`) and shows its progress (`get-ffmpeg.sh status`). Run as root without arguments, it downloads in the foreground.
 - It installs `ffmpeg`, `ffprobe` and the GPL text into `/media/developer/smb-browser/bin/`. You can also put your own static arm64 `ffmpeg` and `ffprobe` there.
 - The file service looks in that directory first, then next to `fmbridge`, then in `PATH`.
 

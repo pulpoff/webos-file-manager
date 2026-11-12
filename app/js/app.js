@@ -677,20 +677,50 @@ var setup = {
       'File Manager can download the static arm64 build from johnvansickle.com (GPLv3): 19 MB to download, about 100 MB on the TV. ' +
       'Browsing and playback work without it, and Settings can download it later.</div>';
     var status = el('div', 'status'); box.appendChild(status);
+    var prog = el('div', 'prog', '<i></i>'); prog.style.display = 'none'; box.appendChild(prog);
     var b = el('div', 'btns'), later = btn('Not now', function () { dialog.close(); });
-    var get = btn('Download', function () {
-      if (get._busy) return; get._busy = true;
-      status.className = 'status'; status.innerHTML = '<span class="fa spin"></span> Downloading and unpacking ffmpeg…';
-      rootRun('get-ffmpeg.sh').then(function () { return waitHealth(20000); }).then(function (h2) {
-        get._busy = false;
-        if (!h2.ffmpeg) throw new Error('ffmpeg was installed, but the file service does not see it');
-        if ($('#dialog').contains(box)) dialog.close();
-        toast('ffmpeg is installed: thumbnails and subtitles are on');
-        if (screen === 'home') home.render(); else browser.render(focusEl && focusEl._entry && focusEl._entry.name);
-      }).catch(function (e) { get._busy = false; status.className = 'status err'; status.textContent = e.message; });
-    }, 'primary');
+    var get = btn('Download', function () { start(); }, 'primary');
     b.appendChild(later); b.appendChild(get); box.appendChild(b);
     dialog.show(box, { focus: get });
+    var shown = function () { return $('#dialog').contains(box); };
+    var last = '', lastAt = 0;
+    // get-ffmpeg.sh runs in the background; its status says how far it is.
+    function start() {
+      get.style.display = 'none'; later.textContent = 'Hide'; setFocus(later);
+      status.className = 'status'; status.innerHTML = '<span class="fa spin"></span> Starting the download…';
+      last = ''; lastAt = Date.now();
+      rootRun('get-ffmpeg.sh start').then(poll).catch(failed);
+    }
+    function poll() {
+      return rootRun('get-ffmpeg.sh status').then(function (r) {
+        var p = String(r.stdoutString || '').trim().split(' '), phase = p[0], got = +p[1] || 0, total = +p[2] || 0;
+        if (phase === 'error') throw new Error(p.slice(3).join(' ') || 'The download failed');
+        if (phase === 'done') return waitHealth(20000).then(finished);
+        if (p[0] + p[1] !== last) { last = p[0] + p[1]; lastAt = Date.now(); }
+        else if (Date.now() - lastAt > 90000) throw new Error('The download stopped making progress');
+        var pct = phase === 'download' ? (total ? Math.min(100, got / total * 100) : 0) : (phase === 'start' || phase === 'none') ? 0 : 100;
+        prog.style.display = ''; prog.firstChild.style.width = pct.toFixed(1) + '%';
+        status.innerHTML = '<span class="fa spin"></span> ' + esc({
+          start: 'Starting the download…',
+          download: 'Downloading ffmpeg: ' + fmtSize(got) + (total ? ' of ' + fmtSize(total) : ''),
+          check: 'Checking the download…', unpack: 'Unpacking…', restart: 'Restarting the file service…'
+        }[phase] || 'Working…');
+        setTimeout(function () { poll().catch(failed); }, 700);
+      });
+    }
+    function finished(h2) {
+      if (!h2.ffmpeg) throw new Error('ffmpeg was installed, but the file service does not see it');
+      if (shown()) dialog.close();
+      toast('ffmpeg is installed: thumbnails and subtitles are on');
+      if (dialog.on) return;
+      if (screen === 'home') home.render(); else browser.render(focusEl && focusEl._entry && focusEl._entry.name);
+    }
+    function failed(e) {
+      if (!shown()) { toast('ffmpeg: ' + e.message, 6000); return; }
+      prog.style.display = 'none';
+      status.className = 'status err'; status.textContent = e.message;
+      get.textContent = 'Try again'; get.style.display = ''; later.textContent = 'Close'; setFocus(get);
+    }
   }
 };
 
