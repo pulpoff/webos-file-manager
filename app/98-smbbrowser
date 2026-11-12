@@ -1,0 +1,16 @@
+#!/bin/sh
+# Homebrew Channel boot hook for File Manager (com.pulp.smbbrowser), installed by setup.sh.
+# Starts the file service supervisor. If the app has been uninstalled, it deletes the
+# service's caches and downloaded tools, then removes itself.
+APP=/media/developer/apps/usr/palm/applications/com.pulp.smbbrowser
+ROOT=/media/developer/smb-browser
+if [ ! -f "$APP/appinfo.json" ]; then
+  rm -rf "$ROOT/cache" "$ROOT/bin" "$ROOT/run-bridge.sh" "$ROOT/server.log" "$ROOT/server.log.1"
+  rm -f "$0"
+  exit 0
+fi
+mkdir -p "$ROOT"
+# A new file rather than an overwrite: a running supervisor keeps reading its own copy.
+cp -f "$APP/run-bridge.sh" "$ROOT/run-bridge.sh.new" && chmod 755 "$ROOT/run-bridge.sh.new" &&
+  mv -f "$ROOT/run-bridge.sh.new" "$ROOT/run-bridge.sh"
+pgrep -f "$ROOT/run-bridge.sh" >/dev/null || nohup "$ROOT/run-bridge.sh" >/dev/null 2>&1 </dev/null &

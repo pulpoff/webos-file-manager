@@ -1,0 +1,15 @@
+{
+  "id": "com.pulp.smbbrowser",
+  "version": "0.6.0",
+  "vendor": "Pulp",
+  "type": "web",
+  "main": "index.html",
+  "title": "File Manager",
+  "icon": "fm-icon.png",
+  "largeIcon": "fm-largeIcon.png",
+  "requiredPermissions": [
+    "media.operation"
+  ],
+  "requiredACG": [],
+  "disableBackHistoryAPI": true
+}

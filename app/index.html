@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>File Manager</title>
+<link rel="stylesheet" href="css/app.css">
+</head>
+<body>
+<div id="app">
+  <header id="topbar">
+    <div id="tb-left">
+      <span id="tb-back" class="tbtn f fa" title="Back">&#xf060;</span>
+      <span class="logo fa">&#xf07c;</span>
+      <div id="tb-titles"><div id="title">File Manager</div><div id="crumbs"></div></div>
+    </div>
+    <div id="tb-right"><span id="tb-buttons"></span><span id="clock"></span></div>
+  </header>
+  <main>
+    <section id="home" class="screen scroll"></section>
+    <section id="browser" class="screen">
+      <div id="listwrap" class="scroll"><div id="list" data-nav="list"></div><div id="empty"></div></div>
+      <aside id="details"></aside>
+    </section>
+  </main>
+  <footer id="hints"></footer>
+</div>
+
+<div id="player">
+  <video id="video" preload="auto"></video>
+  <audio id="audio" preload="auto"></audio>
+  <img id="pimg" alt="">
+  <div id="pcover"><div id="pcover-art"></div><div id="pcover-title"></div></div>
+  <div id="subtitle"></div>
+  <div id="pspin" class="fa">&#xf110;</div>
+  <div id="pmsg"></div>
+  <div class="osd osd-top"><div id="ptitle"></div><div id="psub"></div></div>
+  <div class="osd osd-tr" id="ptracks">
+    <div class="pill f" id="paudio" title="Audio language"><span class="fa">&#xf028;</span><span class="pval" id="paudio-v">–</span></div>
+    <div class="pill f" id="psubs" title="Subtitles"><span class="fa">&#xf20a;</span><span class="pval" id="psubs-v">Off</span></div>
+  </div>
+  <div class="osd osd-bottom">
+    <div id="pbar" class="f"><div id="pbuf"></div><div id="pplayed"></div><div id="pknob"></div><div id="pseek"></div></div>
+    <div id="ptimes"><span id="pcur">0:00</span><span id="pinfo"></span><span id="pdur">0:00</span></div>
+    <div id="pbtns">
+      <span class="pbtn f fa" id="pprev" title="Previous">&#xf048;</span>
+      <span class="pbtn f fa" id="prew" title="Back 10 s">&#xf2ea;</span>
+      <span class="pbtn f fa big" id="pplay" title="Play / pause">&#xf04b;</span>
+      <span class="pbtn f fa" id="pfwd" title="Forward 10 s">&#xf2f9;</span>
+      <span class="pbtn f fa" id="pnextb" title="Next">&#xf051;</span>
+    </div>
+  </div>
+  <div id="pnext"></div>
+</div>
+
+<div id="dialog"></div>
+<div id="toast"></div>
+<script src="js/app.js"></script>
+</body>
+</html>
