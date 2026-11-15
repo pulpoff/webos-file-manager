@@ -8,6 +8,17 @@ Version 0.6.0 is a file manager and media player for rooted LG webOS TVs. It was
 
 It plays video, music and photos with the TV's built-in player. Thumbnails, media information and subtitles come from ffmpeg running on the TV. The app only reads files; it never changes or deletes them.
 
+## Screenshots
+
+Taken on the LG C1 at 1080p. Media titles and file names are blurred.
+
+| | |
+|---|---|
+| ![Home: the USB drive, SMB servers found on the network, a saved location and Continue watching](docs/screenshots/home.jpg) | ![A folder in grid view, with thumbnails](docs/screenshots/grid.jpg) |
+| Home: the USB drive, SMB servers found on the network, a saved location and Continue watching | A folder in grid view, with thumbnails |
+| ![A video from an SMB share, with the player's controls, audio track and subtitles](docs/screenshots/player.jpg) | ![Settings](docs/screenshots/settings.jpg) |
+| A video from an SMB share, with the player's controls, audio track and subtitles | Settings |
+
 ## Requirements
 
 - **A rooted TV with the [webOS Homebrew Channel](https://github.com/webosbrew/webos-homebrew-channel).** The file service runs as root, and the Homebrew Channel starts it.
