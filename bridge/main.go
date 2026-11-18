@@ -1,6 +1,7 @@
 // fmbridge: local HTTP bridge for the webOS File Manager.
 // It lists and streams files from USB drives, SMB shares and SFTP servers,
-// and makes thumbnails, stream info and subtitles with ffmpeg.
+// and makes thumbnails (with webOS's video thumbnailer or ffmpeg), stream info and
+// subtitles (with ffmpeg).
 // It only listens on 127.0.0.1 and only answers the TV app.
 package main
 
@@ -23,7 +24,7 @@ import (
 	"time"
 )
 
-const version = "0.6.0"
+const version = "0.7.0"
 
 type server struct {
 	root    string
@@ -61,6 +62,7 @@ func main() {
 		conns: map[string]FS{},
 		media: &media{
 			ffmpeg: findTool("ffmpeg", toolDirs...), ffprobe: findTool("ffprobe", toolDirs...), nice: findTool("nice"),
+			luna:  findTool("luna-send", "/usr/bin"),
 			cache: filepath.Join(root, "cache"), port: port,
 			imgSem: make(chan struct{}, 1), vidSem: make(chan struct{}, 1), probes: map[string]*Probe{},
 		},
@@ -85,6 +87,7 @@ func main() {
 	mux.HandleFunc("/api/list", s.list)
 	mux.HandleFunc("/api/file", s.file)
 	mux.HandleFunc("/api/thumb", s.thumb)
+	mux.HandleFunc("/api/folderthumb", s.folderThumb)
 	mux.HandleFunc("/api/probe", s.probe)
 	mux.HandleFunc("/api/subs", s.subs)
 	mux.HandleFunc("/api/restart", s.restart)
@@ -223,7 +226,7 @@ func statusFor(err error) int {
 func (s *server) health(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]interface{}{
 		"ok": true, "version": version, "uptime": int(time.Since(s.started).Seconds()),
-		"ffmpeg": s.media.ffmpeg != "", "ffprobe": s.media.ffprobe != "",
+		"ffmpeg": s.media.ffmpeg != "", "ffprobe": s.media.ffprobe != "", "videoThumbs": s.media.luna != "",
 	})
 }
 
@@ -433,7 +436,7 @@ func (s *server) thumb(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, statusFor(err), err)
 		return
 	}
-	p, err := s.media.thumb(r.Context(), src, rel, fs, st, width)
+	p, err := s.media.thumb(r.Context(), src, rel, fs, st, width, 0)
 	if err != nil {
 		w.Header().Set("Cache-Control", "max-age=600")
 		writeErr(w, 404, err)
@@ -441,6 +444,29 @@ func (s *server) thumb(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "image/jpeg")
 	w.Header().Set("Cache-Control", "max-age=31536000, immutable") // the URL carries size and mtime
+	http.ServeFile(w, r, p)
+}
+
+// folderThumb serves a folder's preview, a collage of its videos (see media.folderThumb).
+// The URL carries the folder's mtime, but a folder's mtime misses changes deeper down,
+// so browsers keep it for ten minutes; the bridge's own cache follows the files.
+func (s *server) folderThumb(w http.ResponseWriter, r *http.Request) {
+	src, fs, rel, _, err := s.target(r)
+	if err != nil {
+		writeErr(w, statusFor(err), err)
+		return
+	}
+	width, _ := strconv.Atoi(r.URL.Query().Get("w"))
+	if width < 64 || width > 1920 {
+		width = 320
+	}
+	w.Header().Set("Cache-Control", "max-age=600")
+	p, err := s.media.folderThumb(r.Context(), src, rel, fs, width)
+	if err != nil {
+		writeErr(w, 404, err)
+		return
+	}
+	w.Header().Set("Content-Type", "image/jpeg")
 	http.ServeFile(w, r, p)
 }
 

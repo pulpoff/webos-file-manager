@@ -27,7 +27,7 @@ var store = {
   get: function (k, d) { try { var v = localStorage.getItem('fm.' + k); return v == null ? d : JSON.parse(v); } catch (e) { return d; } },
   set: function (k, v) { try { localStorage.setItem('fm.' + k, JSON.stringify(v)); } catch (e) {} }
 };
-var settings = Object.assign({ theme: 'dark', view: 'list', sort: 'name', desc: false, hidden: false, thumbs: true, subSize: 'm', audioLang: '', subLang: '' }, store.get('settings', {}));
+var settings = Object.assign({ theme: 'dark', view: 'list', sort: 'name', desc: false, hidden: false, thumbs: true, sounds: true, subSize: 'm', audioLang: '', subLang: '' }, store.get('settings', {}));
 function saveSettings() { store.set('settings', settings); }
 
 function api(path, body, timeout) {
@@ -47,6 +47,8 @@ function api(path, body, timeout) {
 function fileURL(src, path) { return BRIDGE + '/api/file?' + q({ src: src, path: path }); }
 var THUMB_W = 480; // one size for lists, grid, details and Home: each file is rendered once
 function thumbURL(src, path, e, w) { return THUMBS + '/api/thumb?' + q({ src: src, path: path, w: w || THUMB_W, v: (e.size || 0) + '-' + (e.mtime || 0) }); }
+// a folder's preview: a 2×2 collage of the videos in it, as LG's Media Player shows folders
+function folderThumbURL(src, path, e, w) { return THUMBS + '/api/folderthumb?' + q({ src: src, path: path, w: w || THUMB_W, v: e.mtime || 0 }); }
 
 // ---------- file kinds ----------
 var KINDS = {
@@ -86,6 +88,49 @@ function toast(msg, ms) {
   var t = $('#toast'); t.textContent = msg; t.classList.add('on');
   clearTimeout(toastTimer); toastTimer = setTimeout(function () { t.classList.remove('on'); }, ms || 2600);
 }
+
+// ---------- UI sounds ----------
+// The cues of the Luma launcher (github.com/ecklf/lg-luma, src/feedback.rs, MIT), made the same
+// way: short, quiet chirps synthesized here, no audio files. 'nav' when the focus moves, 'select'
+// on OK, 'back' when Back does something. Silent in the player, and the audio device is let go
+// whenever media plays or the app is in the background, so it never stands in the media's way.
+var sounds = {
+  ctx: null, bufs: {}, src: null, lastNav: 0,
+  cues: { nav: [0.045, 540, 420], select: [0.085, 660, 990], back: [0.075, 540, 330] }, // seconds, from Hz, to Hz
+  play: function (cue) {
+    if (!settings.sounds || player.on || document.hidden) return;
+    var now = Date.now();
+    if (cue === 'nav') { if (now - this.lastNav < 65) return; this.lastNav = now; } // held arrows: no buzz
+    try {
+      if (!this.ctx) {
+        var AC = window.AudioContext || window.webkitAudioContext;
+        if (!AC) return;
+        this.ctx = new AC(); this.bufs = {};
+      }
+      if (this.ctx.state === 'suspended') { var r = this.ctx.resume(); if (r && r.catch) r.catch(function () {}); }
+      if (this.src) { try { this.src.stop(); } catch (e) {} } // never stack cues behind fast repeats
+      var s = this.ctx.createBufferSource();
+      s.buffer = this.bufs[cue] || (this.bufs[cue] = this.make(this.cues[cue]));
+      s.connect(this.ctx.destination); s.start(0); this.src = s;
+    } catch (e) {}
+  },
+  // A rising or falling sine sweep with a little second harmonic, faded in and out.
+  make: function (c) {
+    var rate = this.ctx.sampleRate, d = c[0], f0 = c[1], f1 = c[2], n = Math.floor(d * rate);
+    var b = this.ctx.createBuffer(1, n, rate), x = b.getChannelData(0);
+    for (var i = 0; i < n; i++) {
+      var t = i / rate, p = i / (n - 1), env = Math.pow(Math.sin(Math.PI * p), 2) * Math.exp(-3 * p);
+      var ph = 2 * Math.PI * (f0 * t + (f1 - f0) * t * t / (2 * d));
+      x[i] = 0.12 * env * (Math.sin(ph) + 0.15 * Math.sin(2 * ph));
+    }
+    return b;
+  },
+  release: function () {
+    if (!this.ctx) return;
+    try { var r = this.ctx.close(); if (r && r.catch) r.catch(function () {}); } catch (e) {}
+    this.ctx = null; this.src = null; this.bufs = {};
+  }
+};
 
 // ---------- focus & navigation ----------
 var focusEl = null;
@@ -392,6 +437,7 @@ var browser = {
     }
     d._entry = e; d._kind = k;
     if (settings.thumbs && (k === 'image' || k === 'video' || k === 'audio')) d._thumb = thumbURL(this.src, joinPath(this.path, e.name), e);
+    else if (settings.thumbs && grid && e.dir) d._thumb = folderThumbURL(this.src, joinPath(this.path, e.name), e);
     d._act = function () { self.activate(e); };
     d._onFocus = function () { $('#list')._index = [].indexOf.call(d.parentNode.children, d); self.showDetails(e); };
     return d;
@@ -414,10 +460,15 @@ var browser = {
     row('Type', e.dir ? 'Folder' : esc((extOf(e.name).slice(1) || 'file').toUpperCase() + ' ' + k));
     if (!e.dir) row('Size', esc(fmtSize(e.size)));
     row('Modified', esc(fmtDate(e.mtime)));
-    if (settings.thumbs && (k === 'image' || k === 'video' || k === 'audio')) {
+    if (settings.thumbs && (k === 'image' || k === 'video' || k === 'audio' || k === 'dir')) {
       var im = new Image(); im.decoding = 'async';
-      im.onload = function () { if (box.querySelector('.dname') && box.querySelector('.dname').textContent === e.name) { var pv = box.querySelector('.pv'); pv.innerHTML = ''; pv.appendChild(im); im.classList.add('ok'); } };
-      im.src = thumbURL(this.src, rel, e);
+      im.onload = function () {
+        if (!box.querySelector('.dname') || box.querySelector('.dname').textContent !== e.name) return;
+        var pv = box.querySelector('.pv');
+        if (k === 'dir') { pv.classList.add('over'); pv.insertBefore(im, pv.firstChild); } else { pv.innerHTML = ''; pv.appendChild(im); }
+        im.classList.add('ok');
+      };
+      im.src = k === 'dir' ? folderThumbURL(this.src, rel, e) : thumbURL(this.src, rel, e);
     }
     if (k === 'video' || k === 'audio') {
       var key = this.src + '|' + rel + '|' + e.size + '|' + e.mtime;
@@ -480,7 +531,12 @@ var thumbs = {
         im.onload = function () {
           if (gen === self.gen) {
             var box = node.querySelector('.ic') || node.querySelector('.thumb');
-            if (box) { box.textContent = ''; box.appendChild(im); requestAnimationFrame(function () { im.classList.add('ok'); }); }
+            if (box) {
+              // a folder's collage goes under its icon, which stays on top
+              if (node._kind === 'dir') { box.classList.add('over'); box.insertBefore(im, box.firstChild); }
+              else { box.textContent = ''; box.appendChild(im); }
+              requestAnimationFrame(function () { im.classList.add('ok'); });
+            }
           }
           done();
         };
@@ -617,7 +673,7 @@ function loginServer(host, name, why) {
 // installs that hook and starts the service. The app runs it as root through the Homebrew
 // Channel's exec method when the service does not answer (first launch), and when the
 // running service is older than the app (just after an update).
-var APP_VERSION = '0.6.0'; // build.sh keeps this in step with appinfo.json
+var APP_VERSION = '0.7.0'; // build.sh keeps this in step with appinfo.json
 var APP_DIR = '/media/developer/apps/usr/palm/applications/com.pulp.smbbrowser';
 var lunaCalls = []; // a PalmServiceBridge must stay referenced until its answer arrives
 function luna(uri, params) {
@@ -673,7 +729,7 @@ var setup = {
     if (!h || h.ffmpeg || (!asked && store.get('ffmpegOffered', false))) return;
     store.set('ffmpegOffered', true);
     var box = el('div', 'dlg'); box.style.width = '60rem';
-    box.innerHTML = '<h2>Download ffmpeg?</h2><div class="msg">Thumbnails, stream information and embedded subtitles need ffmpeg. ' +
+    box.innerHTML = '<h2>Download ffmpeg?</h2><div class="msg">' + (h.videoThumbs ? 'Photo and music thumbnails' : 'Thumbnails') + ', stream information and embedded subtitles need ffmpeg. ' +
       'File Manager can download the static arm64 build from johnvansickle.com (GPLv3): 19 MB to download, about 100 MB on the TV. ' +
       'Browsing and playback work without it, and Settings can download it later.</div>';
     var status = el('div', 'status'); box.appendChild(status);
@@ -731,6 +787,7 @@ function openSettings() {
     ['Theme', function () { return settings.theme === 'dark' ? 'Dark' : 'Light'; }, function () { settings.theme = settings.theme === 'dark' ? 'light' : 'dark'; applyTheme(); }],
     ['Show hidden files', function () { return settings.hidden ? 'On' : 'Off'; }, function () { settings.hidden = !settings.hidden; }],
     ['Thumbnails', function () { return settings.thumbs ? 'On' : 'Off'; }, function () { settings.thumbs = !settings.thumbs; }],
+    ['Sounds', function () { return settings.sounds ? 'On' : 'Off'; }, function () { settings.sounds = !settings.sounds; if (!settings.sounds) sounds.release(); }],
     ['Subtitle size', function () { return { s: 'Small', m: 'Medium', l: 'Large' }[settings.subSize]; }, function () { settings.subSize = { s: 'm', m: 'l', l: 's' }[settings.subSize]; }],
     ['Preferred audio', function () { return langName(settings.audioLang) || 'File default'; }, function () { settings.audioLang = ''; toast('Audio language is now picked again from the next movie you change it in'); }],
     ['Preferred subtitles', function () { return settings.subLang ? langName(settings.subLang) : 'Off'; }, function () { settings.subLang = ''; }],
@@ -744,7 +801,8 @@ function openSettings() {
   });
   var info = el('div', 'msg'); info.style.marginTop = '1.2rem'; m.appendChild(info);
   api('/api/health').then(function (h) {
-    info.textContent = 'File service ' + h.version + ' · running ' + fmtTime(h.uptime) + ' · thumbnails, subtitles and stream info ' + (h.ffmpeg ? 'available' : 'unavailable (ffmpeg missing)');
+    info.textContent = 'File service ' + h.version + ' · running ' + fmtTime(h.uptime) + ' · ' + (h.ffmpeg ? 'thumbnails, subtitles and stream info available' :
+      (h.videoThumbs ? 'video thumbnails from webOS; photo thumbnails, subtitles and stream info need ffmpeg' : 'thumbnails, subtitles and stream info unavailable (ffmpeg missing)'));
     if (h.ffmpeg) return;
     var o = el('div', 'mi opt f', '<span>Download ffmpeg</span><span class="ov">19 MB</span>'); o.style.paddingLeft = '1.2rem';
     o._act = function () { dialog.close(); setup.offerFfmpeg(h, true); };
@@ -774,6 +832,7 @@ var player = {
   openList: function (src, srcName, dir, list, entry) {
     this.src = src; this.srcName = srcName; this.dir = dir; this.list = list; this.idx = list.indexOf(entry);
     this.prevFocus = focusEl; this.on = true;
+    sounds.release(); // the media gets the audio to itself
     $('#player').className = 'on';
     this.start(entry);
   },
@@ -1116,7 +1175,7 @@ document.addEventListener('keydown', function (ev) {
     if (k === KEY.OK || k === KEY.BACK || k === KEY.ESC || k === KEY.UP || k === KEY.DOWN) { ev.preventDefault(); ae.blur(); if (k === KEY.UP || k === KEY.DOWN) spatial(k === KEY.UP ? 'up' : 'down', layerRoot()); }
     return; // typing and the on-screen keyboard
   }
-  var handled = false;
+  var handled = false, was = focusEl;
   if (dialog.on) handled = dialog.key(k);
   else if (player.on) handled = player.key(k, ev);
   else if (screen === 'home') handled = home.key(k);
@@ -1127,7 +1186,12 @@ document.addEventListener('keydown', function (ev) {
     else if (k === KEY.OK) { lastOkAt = Date.now(); activate(focusEl); handled = true; }
   }
   if (player.on && !dialog.on && !$('#player').classList.contains('osd-on') && handled) { /* keys while OSD hidden are player shortcuts */ }
-  if (handled) { ev.preventDefault(); ev.stopPropagation(); }
+  if (handled) {
+    if (k === KEY.OK) sounds.play('select');
+    else if (k === KEY.BACK || k === KEY.ESC) sounds.play('back');
+    else if (focusEl !== was && (k === KEY.LEFT || k === KEY.RIGHT || k === KEY.UP || k === KEY.DOWN)) sounds.play('nav');
+    ev.preventDefault(); ev.stopPropagation();
+  }
 }, true);
 // Magic Remote pointer: hover focuses, click activates
 document.addEventListener('mouseover', function (ev) {
@@ -1139,11 +1203,11 @@ document.addEventListener('click', function (ev) {
   var f = ev.target.closest && ev.target.closest('.f');
   if (player.on && !dialog.on && !f) { player.osd(true); return; }
   if (!f || !layerRoot().contains(f)) return;
-  setFocus(f, true); activate(f);
+  setFocus(f, true); activate(f); sounds.play('select');
 });
 document.addEventListener('mousemove', debounce(function () { if (player.on && !dialog.on) player.osd(true); }, 100));
 document.addEventListener('visibilitychange', function () {
-  if (document.hidden) { if (player.on && player.media && !player.media.paused) { player.pause(); } player.savePos(); }
+  if (document.hidden) { sounds.release(); if (player.on && player.media && !player.media.paused) { player.pause(); } player.savePos(); }
   else if (screen === 'home' && !player.on) home.refresh(false, true);
 });
 $('#tb-back')._act = function () { browser.up(); };

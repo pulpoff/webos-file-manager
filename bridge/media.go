@@ -1,8 +1,9 @@
 package main
 
-// ffmpeg-backed media helpers: stream info, thumbnails and subtitles.
-// Every job runs at nice 19 so it never competes with the UI or playback,
-// and nothing here touches the TV's hardware decoders.
+// Media helpers: stream info, thumbnails and subtitles, from ffmpeg, and video
+// thumbnails from webOS's own thumbnailer when it can. Every ffmpeg job runs at
+// nice 19 so it never competes with the UI or playback, and nothing here touches
+// the TV's hardware decoders.
 
 import (
 	"bytes"
@@ -11,6 +12,8 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"image"
+	"image/jpeg"
 	"io"
 	"net/url"
 	"os"
@@ -26,6 +29,7 @@ import (
 	"unicode/utf16"
 	"unicode/utf8"
 
+	xdraw "golang.org/x/image/draw"
 	"golang.org/x/text/encoding/charmap"
 )
 
@@ -48,6 +52,7 @@ func extOf(name string) string { return strings.ToLower(path.Ext(name)) }
 
 type media struct {
 	ffmpeg, ffprobe, nice string
+	luna                  string // luna-send, for webOS's own video thumbnailer
 	cache                 string
 	port                  int
 	imgSem, vidSem        chan struct{}
@@ -243,9 +248,24 @@ func sidecarSubs(ctx context.Context, fs FS, rel string) []SubInfo {
 
 // ---------- thumbnails ----------
 
-// thumb returns the path of a cached JPEG thumbnail, creating it if needed.
-func (m *media) thumb(ctx context.Context, src, rel string, fs FS, st Entry, width int) (string, error) {
-	key := fileKey(src, rel, st, "thumb"+strconv.Itoa(width))
+// Frame positions for videos: slot 0 is a file's own thumbnail; a folder's preview
+// takes more frames from a video when the folder has fewer than four.
+var (
+	// Seconds, as webOS's thumbnailer can't tell the length first. Some files have no
+	// seek index, and their first thumbnail costs about 1 s per minute of seek on USB.
+	lgSeeks   = [4]float64{120, 600, 1200, 1800}
+	ffmpegPos = [4]float64{0.1, 0.3, 0.5, 0.7} // of the length, which ffprobe tells
+)
+
+// thumb returns the path of a cached JPEG thumbnail, creating it if needed: for
+// videos with webOS's own thumbnailer, falling back to ffmpeg, which makes the
+// photo and audio ones. slot picks a video's frame (see lgSeeks).
+func (m *media) thumb(ctx context.Context, src, rel string, fs FS, st Entry, width, slot int) (string, error) {
+	extra := "thumb" + strconv.Itoa(width)
+	if slot > 0 {
+		extra += "-" + strconv.Itoa(slot)
+	}
+	key := fileKey(src, rel, st, extra)
 	dir := filepath.Join(m.cache, "thumbs", key[:2])
 	out := filepath.Join(dir, key+".jpg")
 	fail := out + ".fail"
@@ -255,10 +275,11 @@ func (m *media) thumb(ctx context.Context, src, rel string, fs FS, st Entry, wid
 	if fi, err := os.Stat(fail); err == nil && time.Since(fi.ModTime()) < 24*time.Hour {
 		return "", fmt.Errorf("no preview")
 	}
-	if m.ffmpeg == "" {
+	ext := extOf(rel)
+	lg := videoExt[ext] && m.luna != ""
+	if m.ffmpeg == "" && !lg {
 		return "", fmt.Errorf("ffmpeg is not installed")
 	}
-	ext := extOf(rel)
 	sem := m.imgSem
 	if !imageExt[ext] {
 		sem = m.vidSem
@@ -275,6 +296,19 @@ func (m *media) thumb(ctx context.Context, src, rel string, fs FS, st Entry, wid
 	os.MkdirAll(dir, 0755)
 	tmp := out + ".tmp.jpg"
 	in := m.input(src, rel, fs)
+	var lgErr error
+	if lg {
+		if lgErr = m.lgThumb(ctx, in, tmp, width, slot); lgErr == nil {
+			return out, os.Rename(tmp, out)
+		}
+		os.Remove(tmp)
+		if m.ffmpeg == "" || ctx.Err() != nil {
+			if ctx.Err() == nil {
+				os.WriteFile(fail, []byte(lgErr.Error()), 0644)
+			}
+			return "", fmt.Errorf("no preview: %v", lgErr)
+		}
+	}
 	h := width * 9 / 16
 	if imageExt[ext] {
 		h = width
@@ -288,10 +322,10 @@ func (m *media) thumb(ctx context.Context, src, rel string, fs FS, st Entry, wid
 		}
 		args = append(args, "-i", in)
 	case videoExt[ext]:
-		ss := 30.0
+		ss := 30.0 + 600*float64(slot)
 		if p, err := m.probe(ctx, src, rel, fs, st); err == nil && p.Duration > 0 {
-			ss = p.Duration * 0.1
-			if ss > 600 {
+			ss = p.Duration * ffmpegPos[slot]
+			if slot == 0 && ss > 600 {
 				ss = 600
 			}
 		}
@@ -310,10 +344,263 @@ func (m *media) thumb(ctx context.Context, src, rel string, fs FS, st Entry, wid
 		return out, os.Rename(tmp, out)
 	}
 	os.Remove(tmp)
+	if lgErr != nil {
+		stderr.WriteString("\n" + lgErr.Error())
+	}
 	if ctx.Err() == nil { // remember real failures, not abandoned requests
 		os.WriteFile(fail, stderr.Bytes(), 0644)
 	}
 	return "", fmt.Errorf("no preview: %v %s", err, strings.TrimSpace(stderr.String()))
+}
+
+// lgReply is the answer of webOS's video thumbnailer.
+type lgReply struct {
+	ReturnValue    bool   `json:"returnValue"`
+	ErrorText      string `json:"errorText"`
+	OriginalWidth  int    `json:"originalWidth"`
+	OriginalHeight int    `json:"originalHeight"`
+}
+
+// lgThumb has webOS's video thumbnailer (com.webos.service.videothumbnailer, the
+// one LG's Media Player uses) write a video's frame as a JPEG of at most
+// width x width*9/16, in the video's own shape. It decodes with LG's own libav,
+// in about 0.1 s for a file on USB; for SMB and SFTP it reads the bridge's stream
+// URL. It can't tell a video's length, so a seek past the end is retried nearer
+// the start.
+func (m *media) lgThumb(ctx context.Context, in, out string, width, slot int) error {
+	call := func(seek float64, w, h int) (lgReply, error) {
+		var r lgReply
+		var params bytes.Buffer
+		enc := json.NewEncoder(&params)
+		enc.SetEscapeHTML(false) // keep the stream URL's & as it is
+		enc.Encode(map[string]interface{}{"videoPath": in, "outputPath": out, "imageType": "jpg",
+			"width": w, "height": h, "seekTime": seek})
+		cctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		defer cancel()
+		b, err := exec.CommandContext(cctx, m.luna, "-n", "1", "luna://com.webos.service.videothumbnailer/getThumbnail",
+			strings.TrimSpace(params.String())).Output()
+		if i := bytes.IndexByte(b, '{'); i >= 0 {
+			if jerr := json.Unmarshal(b[i:], &r); jerr != nil && err == nil {
+				err = jerr
+			}
+		} else if err == nil {
+			err = fmt.Errorf("no answer from the thumbnailer")
+		}
+		if err == nil && !r.ReturnValue {
+			err = fmt.Errorf("thumbnailer: %s", r.ErrorText)
+		}
+		return r, err
+	}
+	h := width * 9 / 16
+	seek := lgSeeks[slot]
+	for {
+		r, err := call(seek, width, h)
+		if err != nil && strings.Contains(r.ErrorText, "seek") && seek > 0 {
+			if seek /= 4; seek < 8 {
+				seek = 0
+			}
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		// It scales to exactly the size asked for, so other shapes than 16:9 are
+		// asked again in their own; that's quick, as it keeps the decoder open.
+		if ow, oh := r.OriginalWidth, r.OriginalHeight; ow > 0 && oh > 0 {
+			w2, h2 := width, width*oh/ow
+			if h2 > h {
+				w2, h2 = h*ow/oh, h
+			}
+			w2, h2 = w2&^1, h2&^1
+			if w2 < width-2 || h2 < h-2 {
+				_, err = call(seek, w2, h2)
+			}
+		}
+		return err
+	}
+}
+
+// ---------- folder previews ----------
+
+type pick struct {
+	rel string
+	e   Entry
+}
+
+// hiddenName tells the system and dot files and folders that previews skip.
+func hiddenName(n string) bool {
+	switch strings.ToLower(n) {
+	case "$recycle.bin", "system volume information", "lost+found", "found.000":
+		return true
+	}
+	return strings.HasPrefix(n, ".")
+}
+
+// mediaPicks chooses up to four of a folder's files for its preview: its videos
+// in name order, then, when photos is set, its photos.
+func mediaPicks(rel string, es []Entry, photos bool) []pick {
+	var vids, pics []pick
+	for _, e := range es {
+		if e.Dir || hiddenName(e.Name) {
+			continue
+		}
+		if x := extOf(e.Name); videoExt[x] {
+			vids = append(vids, pick{path.Join(rel, e.Name), e})
+		} else if photos && imageExt[x] {
+			pics = append(pics, pick{path.Join(rel, e.Name), e})
+		}
+	}
+	sort.SliceStable(vids, func(i, j int) bool { return strings.ToLower(vids[i].rel) < strings.ToLower(vids[j].rel) })
+	sort.SliceStable(pics, func(i, j int) bool { return strings.ToLower(pics[i].rel) < strings.ToLower(pics[j].rel) })
+	picks := append(vids, pics...)
+	if len(picks) > 4 {
+		picks = picks[:4]
+	}
+	return picks
+}
+
+// folderPicks chooses the files of a folder's preview: its own videos, else its
+// photos (which need ffmpeg), else the videos of its first subfolders, one level
+// down, looking into four at most (a series' seasons, say).
+func (m *media) folderPicks(ctx context.Context, fs FS, rel string) ([]pick, error) {
+	es, err := fs.List(ctx, rel)
+	if err != nil {
+		return nil, err
+	}
+	if picks := mediaPicks(rel, es, m.ffmpeg != ""); len(picks) > 0 {
+		return picks, nil
+	}
+	sortEntries(es)
+	var picks []pick
+	looked := 0
+	for _, e := range es {
+		if !e.Dir || hiddenName(e.Name) {
+			continue
+		}
+		if looked++; looked > 4 {
+			break
+		}
+		sub := path.Join(rel, e.Name)
+		ses, err := fs.List(ctx, sub)
+		if err != nil {
+			if ctx.Err() != nil {
+				return nil, ctx.Err()
+			}
+			continue
+		}
+		picks = append(picks, mediaPicks(sub, ses, false)...)
+		if len(picks) >= 4 {
+			return picks[:4], nil
+		}
+	}
+	return picks, nil
+}
+
+// folderThumb returns a folder's preview, as LG's Media Player shows folders: a
+// 2x2 collage of frames from the files folderPicks chooses. With fewer than four
+// files, the videos give more frames; a single photo fills the whole picture. It
+// is cached under a key made of the files and frames it shows, so new or changed
+// files make a new one.
+func (m *media) folderThumb(ctx context.Context, src, rel string, fs FS, width int) (string, error) {
+	picks, err := m.folderPicks(ctx, fs, rel)
+	if err != nil {
+		return "", err
+	}
+	if len(picks) == 0 {
+		return "", fmt.Errorf("no videos or photos here")
+	}
+	type frame struct {
+		p    pick
+		slot int
+	}
+	var frames []frame
+	for _, p := range picks {
+		frames = append(frames, frame{p, 0})
+	}
+	for slot := 1; slot < 4 && len(frames) < 4; slot++ {
+		for _, p := range picks {
+			if videoExt[extOf(p.rel)] && len(frames) < 4 {
+				frames = append(frames, frame{p, slot})
+			}
+		}
+	}
+	h := sha1.New()
+	fmt.Fprintf(h, "folder\x00%s\x00%s\x00%d", src, rel, width)
+	for _, f := range frames {
+		fmt.Fprintf(h, "\x00%s\x00%d\x00%d\x00%d", f.p.rel, f.p.e.Size, f.p.e.Mtime, f.slot)
+	}
+	key := hex.EncodeToString(h.Sum(nil))
+	dir := filepath.Join(m.cache, "thumbs", key[:2])
+	out := filepath.Join(dir, key+".jpg")
+	if _, err := os.Stat(out); err == nil {
+		return out, nil
+	}
+	var imgs []image.Image
+	for _, f := range frames {
+		p, err := m.thumb(ctx, src, f.p.rel, fs, f.p.e, width, f.slot)
+		if err != nil {
+			if ctx.Err() != nil {
+				return "", ctx.Err()
+			}
+			continue
+		}
+		if img, err := decodeJPEG(p); err == nil {
+			imgs = append(imgs, img)
+		}
+	}
+	if len(imgs) == 0 {
+		return "", fmt.Errorf("no preview")
+	}
+	W, H := width, width*9/16
+	dst := image.NewRGBA(image.Rect(0, 0, W, H))
+	if len(imgs) == 1 {
+		cover(dst, dst.Bounds(), imgs[0])
+	} else {
+		xs, ys := [3]int{0, W / 2, W}, [3]int{0, H / 2, H}
+		for i := 0; i < 4; i++ {
+			cover(dst, image.Rect(xs[i%2], ys[i/2], xs[i%2+1], ys[i/2+1]), imgs[i%len(imgs)])
+		}
+	}
+	os.MkdirAll(dir, 0755)
+	tmp := out + ".tmp.jpg"
+	f, err := os.Create(tmp)
+	if err != nil {
+		return "", err
+	}
+	err = jpeg.Encode(f, dst, &jpeg.Options{Quality: 82})
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	if err != nil {
+		os.Remove(tmp)
+		return "", err
+	}
+	return out, os.Rename(tmp, out)
+}
+
+func decodeJPEG(p string) (image.Image, error) {
+	f, err := os.Open(p)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	return jpeg.Decode(f)
+}
+
+// cover scales the middle of src that has r's shape onto r of dst.
+func cover(dst *image.RGBA, r image.Rectangle, src image.Image) {
+	sb := src.Bounds()
+	sw, sh := sb.Dx(), sb.Dy()
+	if sw*r.Dy() > sh*r.Dx() { // wider than r: crop the sides
+		w := sh * r.Dx() / r.Dy()
+		sb.Min.X += (sw - w) / 2
+		sb.Max.X = sb.Min.X + w
+	} else { // taller: crop top and bottom
+		h := sw * r.Dy() / r.Dx()
+		sb.Min.Y += (sh - h) / 2
+		sb.Max.Y = sb.Min.Y + h
+	}
+	xdraw.CatmullRom.Scale(dst, r, src, sb, xdraw.Src, nil)
 }
 
 // pruneCache keeps the thumbnail cache under limit bytes, deleting oldest first.

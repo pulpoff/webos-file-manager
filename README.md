@@ -6,7 +6,7 @@ Version 0.6.0 is a file manager and media player for rooted LG webOS TVs. It was
 - SMB shares, either found on the local network or saved as locations
 - SFTP servers
 
-It plays video, music and photos with the TV's built-in player. Thumbnails, media information and subtitles come from ffmpeg running on the TV. The app only reads files; it never changes or deletes them.
+It plays video, music and photos with the TV's built-in player. Video thumbnails come from the TV's own thumbnailer; photo and music thumbnails, media information and subtitles come from ffmpeg running on the TV. The app only reads files; it never changes or deletes them.
 
 ## Screenshots
 
@@ -37,7 +37,7 @@ After an update, the app notices that the running file service is older than the
 
 ### ffmpeg
 
-Thumbnails, media information and embedded subtitles need ffmpeg. Browsing and playback work without it.
+Photo and music thumbnails, media information and embedded subtitles need ffmpeg. Browsing, playback and video thumbnails work without it: video thumbnails come from webOS's own thumbnailer, the one LG's Media Player uses, and ffmpeg is only their fallback.
 
 - The app offers the download once; you can also start it later from **Settings → Download ffmpeg**.
 - `get-ffmpeg.sh` downloads John Van Sickle's [static arm64 build](https://johnvansickle.com/ffmpeg/) (GPLv3; 19 MB to download, about 100 MB on the TV) and checks it against the published md5. The app starts it in the background (`get-ffmpeg.sh start`) and shows its progress (`get-ffmpeg.sh status`). Run as root without arguments, it downloads in the foreground.
@@ -123,6 +123,10 @@ These are for testing. The defaults are what the TV uses.
 - **Pinned folders**.
 - **Continue watching**.
 
+In grid view, a folder shows a collage of the videos in it, as LG's Media Player does. A folder without videos shows its photos; a folder of folders (a series' seasons, say) shows the videos of its first subfolders.
+
+The interface plays short, quiet sounds when the focus moves, when you press OK and when Back goes somewhere. They are the cues of the [Luma](https://github.com/ecklf/lg-luma) launcher, synthesized the same way. The player stays silent. **Settings → Sounds** turns them off.
+
 | Screen | Key | Action |
 |---|---|---|
 | Home | Red | Options for the selected tile |
@@ -158,7 +162,7 @@ If the TV pauses playback by itself, the player resumes it after 1.5 s unless yo
 
 | Endpoint | Purpose |
 |---|---|
-| `GET /api/health` | Version, uptime and whether ffmpeg was found |
+| `GET /api/health` | Version, uptime, whether ffmpeg was found and whether webOS's video thumbnailer is available (`videoThumbs`) |
 | `GET /api/sources` | `{usb:[…], network:[…]}`. Passwords are never returned. |
 | `POST /api/sources/save`, `/delete`, `/test` | Manage saved locations |
 | `GET /api/smb/shares` | List a server's shares |
@@ -167,6 +171,7 @@ If the TV pauses playback by itself, the player resumes it after 1.5 s unless yo
 | `GET /api/list?src=&path=` | `{path, entries:[{name,dir,size,mtime}]}` |
 | `GET /api/file?src=&path=` | File contents, with byte ranges |
 | `GET /api/thumb?src=&path=&w=` | Cached JPEG thumbnail |
+| `GET /api/folderthumb?src=&path=&w=` | A folder's preview: a 2×2 collage of its videos (or photos), cached |
 | `GET /api/probe?src=&path=` | Duration, video, audio and subtitle tracks, and subtitle files next to the video |
 | `GET /api/subs?src=&path=&id=&from=` | `{done, cues:[[start,end,text]], total}`, filled in as extraction runs |
 | `POST /api/restart` | Exit, so that the supervisor restarts the bridge |
@@ -184,7 +189,13 @@ Not as it is. `fmbridge` is a native binary that runs as root, started by the Ho
 
 ## License
 
-MIT; see `LICENSE`. Font Awesome Free is under the SIL Open Font License 1.1. ffmpeg is not part of this project: the app downloads it from its publisher on request.
+MIT; see `LICENSE`. Font Awesome Free is under the SIL Open Font License 1.1. The interface sounds follow Luma's `src/feedback.rs` (MIT, Copyright (c) 2026 Luma contributors). ffmpeg is not part of this project: the app downloads it from its publisher on request.
+
+## Version 0.7.0 changes
+
+- **Interface sounds.** Moving, selecting and going back play the Luma launcher's short cues. On by default; **Settings → Sounds** turns them off.
+- **Video thumbnails without ffmpeg.** The bridge asks webOS's own video thumbnailer first, which decodes a frame in about 0.1 s for a file on USB, and falls back to ffmpeg.
+- **Folder previews.** In grid view a folder shows a 2×2 collage of its videos, under the folder icon.
 
 ## Version 0.6.0 changes
 
