@@ -123,7 +123,7 @@ These are for testing. The defaults are what the TV uses.
 - **Pinned folders**.
 - **Continue watching**.
 
-In grid view, a folder shows a collage of the videos in it, as LG's Media Player does. A folder without videos shows its photos; a folder of folders (a series' seasons, say) shows the videos of its first subfolders.
+In grid view, a folder shows a collage of the videos in it, as LG's Media Player does, or of its photos when it has no videos. A folder of folders (a series' seasons, or a photo library's years and albums) shows the videos and photos of its first subfolders, up to two levels down.
 
 The interface plays short, quiet sounds when the focus moves, when you press OK and when Back goes somewhere. They are the cues of the [Luma](https://github.com/ecklf/lg-luma) launcher, synthesized the same way. The player stays silent. **Settings → Sounds** turns them off.
 
@@ -171,7 +171,7 @@ If the TV pauses playback by itself, the player resumes it after 1.5 s unless yo
 | `GET /api/list?src=&path=` | `{path, entries:[{name,dir,size,mtime}]}` |
 | `GET /api/file?src=&path=` | File contents, with byte ranges |
 | `GET /api/thumb?src=&path=&w=` | Cached JPEG thumbnail |
-| `GET /api/folderthumb?src=&path=&w=` | A folder's preview: a 2×2 collage of its videos (or photos), cached |
+| `GET /api/folderthumb?src=&path=&w=` | A folder's preview: a 2×2 collage of its videos or photos, or of its subfolders' (two levels down), cached |
 | `GET /api/probe?src=&path=` | Duration, video, audio and subtitle tracks, and subtitle files next to the video |
 | `GET /api/subs?src=&path=&id=&from=` | `{done, cues:[[start,end,text]], total}`, filled in as extraction runs |
 | `POST /api/restart` | Exit, so that the supervisor restarts the bridge |
@@ -190,6 +190,10 @@ Not as it is. `fmbridge` is a native binary that runs as root, started by the Ho
 ## License
 
 MIT; see `LICENSE`. Font Awesome Free is under the SIL Open Font License 1.1. The interface sounds follow Luma's `src/feedback.rs` (MIT, Copyright (c) 2026 Luma contributors). ffmpeg is not part of this project: the app downloads it from its publisher on request.
+
+## Version 0.7.1 changes
+
+- **Photo albums get folder previews too.** A folder that only holds folders now takes photos from them as well as videos, and looks up to two levels down (a photo library's years, then albums), listing 12 folders at most.
 
 ## Version 0.7.0 changes
 

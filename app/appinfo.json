@@ -1,6 +1,6 @@
 {
   "id": "com.pulp.smbbrowser",
-  "version": "0.7.0",
+  "version": "0.7.1",
   "vendor": "Pulp",
   "type": "web",
   "main": "index.html",

@@ -673,7 +673,7 @@ function loginServer(host, name, why) {
 // installs that hook and starts the service. The app runs it as root through the Homebrew
 // Channel's exec method when the service does not answer (first launch), and when the
 // running service is older than the app (just after an update).
-var APP_VERSION = '0.7.0'; // build.sh keeps this in step with appinfo.json
+var APP_VERSION = '0.7.1'; // build.sh keeps this in step with appinfo.json
 var APP_DIR = '/media/developer/apps/usr/palm/applications/com.pulp.smbbrowser';
 var lunaCalls = []; // a PalmServiceBridge must stay referenced until its answer arrives
 function luna(uri, params) {

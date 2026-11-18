@@ -459,38 +459,65 @@ func mediaPicks(rel string, es []Entry, photos bool) []pick {
 	return picks
 }
 
+// Folder previews of folders that only hold folders look this deep, and list at
+// most this many of them: a series' seasons, or a photo library's years and albums.
+const (
+	previewDepth = 2
+	previewLists = 12
+)
+
+// subfolders returns the first n subfolders of rel, in the order the app shows them.
+func subfolders(rel string, es []Entry, n int) []string {
+	sortEntries(es)
+	var out []string
+	for _, e := range es {
+		if e.Dir && !hiddenName(e.Name) && len(out) < n {
+			out = append(out, path.Join(rel, e.Name))
+		}
+	}
+	return out
+}
+
 // folderPicks chooses the files of a folder's preview: its own videos, else its
-// photos (which need ffmpeg), else the videos of its first subfolders, one level
-// down, looking into four at most (a series' seasons, say).
+// photos (photo thumbnails need ffmpeg). A folder with neither takes them from its
+// subfolders, breadth first: four subfolders a level, previewDepth levels down,
+// previewLists listings at most.
 func (m *media) folderPicks(ctx context.Context, fs FS, rel string) ([]pick, error) {
 	es, err := fs.List(ctx, rel)
 	if err != nil {
 		return nil, err
 	}
-	if picks := mediaPicks(rel, es, m.ffmpeg != ""); len(picks) > 0 {
+	photos := m.ffmpeg != ""
+	if picks := mediaPicks(rel, es, photos); len(picks) > 0 {
 		return picks, nil
 	}
-	sortEntries(es)
+	type dir struct {
+		rel   string
+		depth int
+	}
+	var queue []dir
+	for _, s := range subfolders(rel, es, 4) {
+		queue = append(queue, dir{s, 1})
+	}
 	var picks []pick
-	looked := 0
-	for _, e := range es {
-		if !e.Dir || hiddenName(e.Name) {
-			continue
-		}
-		if looked++; looked > 4 {
-			break
-		}
-		sub := path.Join(rel, e.Name)
-		ses, err := fs.List(ctx, sub)
+	for listed := 0; len(queue) > 0 && listed < previewLists; listed++ {
+		d := queue[0]
+		queue = queue[1:]
+		ses, err := fs.List(ctx, d.rel)
 		if err != nil {
 			if ctx.Err() != nil {
 				return nil, ctx.Err()
 			}
 			continue
 		}
-		picks = append(picks, mediaPicks(sub, ses, false)...)
+		picks = append(picks, mediaPicks(d.rel, ses, photos)...)
 		if len(picks) >= 4 {
 			return picks[:4], nil
+		}
+		if d.depth < previewDepth {
+			for _, s := range subfolders(d.rel, ses, 4) {
+				queue = append(queue, dir{s, d.depth + 1})
+			}
 		}
 	}
 	return picks, nil
